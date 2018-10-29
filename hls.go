@@ -48,7 +48,7 @@ func getBestBandwidth(u *url.URL) (*m3u8.Variant, error) {
 	return nil, errors.New("no streams found")
 }
 
-func downloadHLS(u *url.URL, dst io.Writer) error {
+func HLS(u *url.URL, dst io.Writer) error {
 	variant, err := getBestBandwidth(u)
 	if err != nil {
 		return err

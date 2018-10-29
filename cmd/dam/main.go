@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/url"
 	"os"
+
+	"github.com/otommod/godam"
 )
 
 var (
@@ -43,7 +45,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	err = downloadHLS(u, fd)
+	err = godam.HLS(u, fd)
 	if err != nil {
 		log.Fatal(err)
 	}
