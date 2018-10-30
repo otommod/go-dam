@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/grafov/m3u8"
@@ -39,7 +40,7 @@ func getBestBandwidth(u *url.URL) (*m3u8.Variant, error) {
 	for _, v := range master.Variants {
 		if v.Iframe {
 			// not interested in I-Frame Playlists, it seems they're meant to
-			// be used to get those little thumbnails when hover over the
+			// be used to get those little thumbnails when you hover over the
 			// seekbar
 			continue
 		}
@@ -59,8 +60,6 @@ func HLS(u *url.URL, dst io.Writer) error {
 		return err
 	}
 
-	fp := dst
-	// fp := ActivityWriter{dst}
 	seenMediaSequence := uint64(0)
 	byterangeOffsets := make(map[string]int64)
 
@@ -88,7 +87,7 @@ func HLS(u *url.URL, dst io.Writer) error {
 		if media.Iframe {
 			// as far as I can tell, "normal" Media Playlists that are not
 			// given in an EXT-X-I-FRAME-INF should not be EXT-X-I-FRAMES-ONLY
-			log.Fatal("EXT-I-FRAMES-ONLY")
+			return errors.New("playlist is EXT-I-FRAMES-ONLY")
 		}
 
 		mediaSequence := media.SeqNo
@@ -113,12 +112,10 @@ func HLS(u *url.URL, dst io.Writer) error {
 
 		go func() {
 			for r := range segCh {
-				if _, err := io.Copy(fp, r); err != nil {
-					// return err
+				if _, err := io.Copy(dst, r); err != nil {
 					log.Fatal(err)
 				}
 				if err := r.Close(); err != nil {
-					// return err
 					log.Fatal(err)
 				}
 			}
@@ -138,13 +135,13 @@ func HLS(u *url.URL, dst io.Writer) error {
 			seenMediaSequence = seqID
 
 			if seg.Key != nil {
-				log.Fatalln("segment is encrypted")
+				return errors.New("segment is encrypted")
 			}
 
 			log.Println("downloading segment", seg.URI)
 			req, err := http.NewRequest("GET", segURL.String(), nil)
 			if err != nil {
-				log.Fatal(err)
+				return err
 			}
 
 			if seg.Limit < 0 {
@@ -162,12 +159,44 @@ func HLS(u *url.URL, dst io.Writer) error {
 				byterangeOffsets[seg.URI] = end + 1
 			}
 
-			segData, err := http.DefaultClient.Do(req)
-			if err != nil {
-				return err
-			}
+			success := false
+			retries := 0
+			retriesStart := time.Now()
+			retriesEnd := retriesStart.Add(media.TargetDuration)
+			for time.Now().Before(retriesEnd) {
+				segData, err := http.DefaultClient.Do(req)
+				if err != nil || segData.StatusCode >= 500 {
+					// retry the request if it failed because of network or
+					// server issues
+					segData.Body.Close()
+					var delay time.Duration
 
-			segCh <- ActivityReadCloser{segData.Body}
+					if segData.StatusCode == 503 && segData.Header.Get("Retry-After") != "" {
+						header := segData.Header.Get("Retry-After")
+						when, err := http.ParseTime(header)
+						if err != nil {
+							after, err := strconv.ParseInt(header, 10, 64)
+							if err == nil && after > 0 {
+								delay = time.Duration(after) * time.Second
+							}
+						} else {
+							delay = time.Until(when)
+						}
+					} else {
+						retries++
+						delay = time.Duration(retries) * time.Second / 2
+					}
+					time.Sleep(delay)
+					continue
+				}
+
+				segCh <- ActivityReadCloser{segData.Body}
+				success = true
+				break
+			}
+			if !success {
+				return fmt.Errorf("request failed %s", seg.URI)
+			}
 		}
 
 		close(segCh)
