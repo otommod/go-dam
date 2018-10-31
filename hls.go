@@ -28,10 +28,21 @@ var (
 	}
 )
 
+type HTTPError struct {
+	StatusCode int
+	Status     string
+}
+
+func (e HTTPError) Error() string {
+	return e.Status
+}
+
 func getBestBandwidth(u *url.URL) (*m3u8.Variant, error) {
 	r, err := http.Get(u.String())
 	if err != nil {
 		return nil, err
+	} else if r.StatusCode != 200 {
+		return nil, HTTPError{r.StatusCode, r.Status}
 	}
 
 	playlist, playlistType, err := m3u8.DecodeFrom(r.Body, false)
@@ -42,14 +53,10 @@ func getBestBandwidth(u *url.URL) (*m3u8.Variant, error) {
 	}
 	master := playlist.(*m3u8.MasterPlaylist)
 
-	if len(master.Variants) < 1 {
-		return nil, errors.New("no streams found")
-	} else if len(master.Variants) > 1 {
-		log.Printf("found %d variations\n", len(master.Variants))
-		sort.Slice(master.Variants, func(i, j int) bool {
-			return master.Variants[i].Bandwidth > master.Variants[j].Bandwidth
-		})
-	}
+	log.Printf("found %d variations\n", len(master.Variants))
+	sort.Slice(master.Variants, func(i, j int) bool {
+		return master.Variants[i].Bandwidth > master.Variants[j].Bandwidth
+	})
 
 	for _, v := range master.Variants {
 		if v.Iframe {
@@ -82,6 +89,8 @@ func HLS(u *url.URL, dst io.Writer) error {
 		r, err := http.Get(variantURL.String())
 		if err != nil {
 			return err
+		} else if r.StatusCode != 200 {
+			return HTTPError{r.StatusCode, r.Status}
 		}
 
 		playlist, playlistType, err := DecodeFrom(r.Body, false)
