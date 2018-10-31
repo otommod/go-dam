@@ -12,11 +12,12 @@ import (
 type MediaSegment struct {
 	URI *url.URL
 
-	*m3u8.MediaSegment
+	m3u8.MediaSegment
 }
 
 type MediaPlaylist struct {
 	TargetDuration time.Duration
+	Segments       []*m3u8.MediaSegment
 	// Segments       []*MediaSegment
 
 	*m3u8.MediaPlaylist
@@ -41,10 +42,10 @@ func DecodeFrom(r io.Reader, strict bool) (playlist m3u8.Playlist, playlistType 
 			}
 			seg.Key = key
 		}
-		media.Segments = media.Segments[:media.Count()]
 
-		playlist = MediaPlaylist{
-			TargetDuration: time.Duration(media.TargetDuration * 1000000000),
+		playlist = &MediaPlaylist{
+			TargetDuration: time.Duration(media.TargetDuration * 1e9),
+			Segments:       media.Segments[:media.Count()],
 			MediaPlaylist:  media,
 		}
 	}

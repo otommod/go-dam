@@ -1,6 +1,7 @@
 package godam
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,19 @@ import (
 	"time"
 
 	"github.com/grafov/m3u8"
+)
+
+var (
+	// Customize the Transport to have larger connection pool
+	transport = &http.Transport{
+		// MaxIdleConns:        100,
+		// MaxIdleConnsPerHost: 8,
+		TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
+	}
+	client = &http.Client{
+		// Transport: http.DefaultTransport,
+		Transport: transport,
+	}
 )
 
 func getBestBandwidth(u *url.URL) (*m3u8.Variant, error) {
@@ -76,7 +90,7 @@ func HLS(u *url.URL, dst io.Writer) error {
 		} else if playlistType != m3u8.MEDIA {
 			return errors.New("expected Media Playlist")
 		}
-		media := playlist.(MediaPlaylist)
+		media := playlist.(*MediaPlaylist)
 
 		if media.TargetDuration <= 0 {
 			return errors.New("EXT-X-TARGETDURATION was not positive")
