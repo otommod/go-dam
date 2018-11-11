@@ -1,7 +1,7 @@
 package godam
 
 import (
-	"crypto/tls"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -15,25 +15,16 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-var (
-	// Customize the Transport to have larger connection pool
-	transport = &http.Transport{
-		// MaxIdleConns:        100,
-		// MaxIdleConnsPerHost: 8,
-		TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
-	}
-	client = &http.Client{
-		// Transport: http.DefaultTransport,
-		Transport: transport,
-	}
-)
-
 type HTTPError struct {
 	*http.Response
 }
 
 func (e HTTPError) Error() string {
 	return e.Status
+}
+
+type HLS struct {
+	Client *http.Client
 }
 
 func getBestBandwidth(u *url.URL) (*m3u8.Variant, error) {
@@ -44,7 +35,7 @@ func getBestBandwidth(u *url.URL) (*m3u8.Variant, error) {
 		return nil, HTTPError{r}
 	}
 
-	playlist, playlistType, err := m3u8.DecodeFrom(r.Body, false)
+	playlist, playlistType, err := DecodeFrom(r.Body)
 	if err != nil {
 		return nil, err
 	} else if playlistType != m3u8.MASTER {
@@ -59,9 +50,9 @@ func getBestBandwidth(u *url.URL) (*m3u8.Variant, error) {
 
 	for _, v := range master.Variants {
 		if v.Iframe {
-			// not interested in I-Frame Playlists, it seems they're meant to
-			// be used to get those little thumbnails when you hover over the
-			// seekbar
+			// EXT-X-I-FRAME-STREAM-INF
+			// Not interested.  They're meant for so-called Trick Play, to get
+			// those little thumbnails when you hover over the seekbar.
 			continue
 		}
 		return v, nil
@@ -69,13 +60,13 @@ func getBestBandwidth(u *url.URL) (*m3u8.Variant, error) {
 	return nil, errors.New("no streams found")
 }
 
-func HLS(u *url.URL, dst io.Writer) error {
-	variant, err := getBestBandwidth(u)
+func (h HLS) Get(masterURL *url.URL, dst io.Writer) error {
+	variant, err := getBestBandwidth(masterURL)
 	if err != nil {
 		return err
 	}
 
-	variantURL, err := u.Parse(variant.URI)
+	variantURL, err := masterURL.Parse(variant.URI)
 	if err != nil {
 		return err
 	}
@@ -84,7 +75,7 @@ func HLS(u *url.URL, dst io.Writer) error {
 	byterangeOffsets := make(map[string]int64)
 
 	for {
-		log.Println("downloading playlist", variant)
+		log.Println("downloading playlist", variant.URI)
 		r, err := http.Get(variantURL.String())
 		if err != nil {
 			return err
@@ -92,7 +83,7 @@ func HLS(u *url.URL, dst io.Writer) error {
 			return HTTPError{r}
 		}
 
-		playlist, playlistType, err := DecodeFrom(r.Body, false)
+		playlist, playlistType, err := DecodeFrom(r.Body)
 		if err != nil {
 			return err
 		} else if playlistType != m3u8.MEDIA {
@@ -107,9 +98,9 @@ func HLS(u *url.URL, dst io.Writer) error {
 		}
 
 		if media.Iframe {
-			// as far as I can tell, "normal" Media Playlists that are not
-			// given in an EXT-X-I-FRAME-INF should not be EXT-X-I-FRAMES-ONLY
-			return errors.New("playlist is EXT-I-FRAMES-ONLY")
+			// as far as I can tell, non EXT-X-I-FRAME-STREAM-INF Media
+			// Playlists should not be EXT-X-I-FRAMES-ONLY
+			return errors.New("EXT-I-FRAMES-ONLY")
 		}
 
 		mediaSequence := media.SeqNo
@@ -144,20 +135,22 @@ func HLS(u *url.URL, dst io.Writer) error {
 			return nil
 		})
 
-		for i, seg := range media.Segments {
-			seqID := mediaSequence + uint64(i)
-			segURL, _ := variantURL.Parse(seg.URI)
-
-			if seqID <= seenMediaSequence {
+		for _, seg := range media.Segments {
+			if seg.SeqId <= seenMediaSequence {
 				log.Println("skipping segment", seg.URI)
 				continue
-			} else if seqID > seenMediaSequence+1 {
-				log.Println("\033[31m", seqID-seenMediaSequence-1, "segments expired", "\033[m")
+			} else if seg.SeqId > seenMediaSequence+1 {
+				log.Println("\033[31m", seg.SeqId-seenMediaSequence-1, "segments expired", "\033[m")
 			}
-			seenMediaSequence = seqID
+			seenMediaSequence = seg.SeqId
 
 			if seg.Key != nil {
 				return errors.New("segment is encrypted")
+			}
+
+			segURL, err := variantURL.Parse(seg.URI)
+			if err != nil {
+				return err
 			}
 
 			log.Println("downloading segment", seg.URI)
@@ -169,7 +162,7 @@ func HLS(u *url.URL, dst io.Writer) error {
 			if seg.Limit < 0 {
 				return errors.New("EXT-X-BYTERANGE is negative")
 			} else if seg.Limit != 0 {
-				offset, ok := byterangeOffsets[seg.URI]
+				offset, ok := byterangeOffsets[segURL.String()]
 				if seg.Offset != 0 {
 					offset = seg.Offset
 				} else if !ok {
@@ -179,11 +172,11 @@ func HLS(u *url.URL, dst io.Writer) error {
 				// the Range header is inclusive
 				end := offset + seg.Limit - 1
 				req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, end))
-				byterangeOffsets[seg.URI] = end + 1
+				byterangeOffsets[segURL.String()] = end + 1
 			}
 
-			err = retry(media.TargetDuration, func() error {
-				segData, err := http.DefaultClient.Do(req)
+			err = retry(media.TargetDuration, func(ctx context.Context) error {
+				segData, err := h.Client.Do(req.WithContext(ctx))
 
 				// retry the request if it failed due to network or server issues
 				if err != nil {
@@ -198,7 +191,7 @@ func HLS(u *url.URL, dst io.Writer) error {
 					}
 				}
 
-				segCh <- ActivityReadCloser{segData.Body}
+				segCh <- segData.Body
 				return nil
 			})
 			if err != nil {

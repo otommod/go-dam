@@ -1,6 +1,7 @@
 package godam
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -21,30 +22,27 @@ func parseRetryAfterHeader(retryAfter string) time.Duration {
 	return time.Until(when)
 }
 
-func retry(timeout time.Duration, f func() error) (err error) {
-	retriesStart := time.Now()
-	retriesEnd := retriesStart.Add(timeout)
+func retry(timeout time.Duration, f func(ctx context.Context) error) (err error) {
+	startedTrying := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
-	for retries := 0; time.Now().Before(retriesEnd); retries++ {
-		var delay time.Duration
+	for retries := 0; time.Since(startedTrying) < timeout; retries++ {
+		delay := time.Duration(retries+1) * time.Second / 2
 
-		err = f()
-		if err != nil {
-			switch v := err.(type) {
-			case stopRetrying:
-				return v.error
-			case HTTPError:
-				if v.StatusCode == 503 && v.Header.Get("Retry-After") != "" {
-					delay = parseRetryAfterHeader(v.Header.Get("Retry-After"))
-				}
-			default:
-				delay = time.Duration(retries+1) * time.Second / 2
+		err = f(ctx)
+		switch v := err.(type) {
+		case nil:
+			break
+		case stopRetrying:
+			return v.error
+		case HTTPError:
+			if v.StatusCode == 503 && v.Header.Get("Retry-After") != "" {
+				delay = parseRetryAfterHeader(v.Header.Get("Retry-After"))
 			}
-
-			time.Sleep(delay)
-			continue
 		}
-		break
+
+		time.Sleep(delay)
 	}
 	return err
 }

@@ -2,42 +2,37 @@ package godam
 
 import (
 	"io"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/grafov/m3u8"
 )
 
-type MediaSegment struct {
-	URI *url.URL
-
-	m3u8.MediaSegment
-}
-
 type MediaPlaylist struct {
 	TargetDuration time.Duration
-	Segments       []*m3u8.MediaSegment
-	// Segments       []*MediaSegment
-
 	*m3u8.MediaPlaylist
 }
 
-func DecodeFrom(r io.Reader, strict bool) (playlist m3u8.Playlist, playlistType m3u8.ListType, err error) {
-	playlist, playlistType, err = m3u8.DecodeFrom(r, strict)
+func DecodeFrom(r io.Reader) (playlist m3u8.Playlist, playlistType m3u8.ListType, err error) {
+	playlist, playlistType, err = m3u8.DecodeFrom(r, true)
 
-	if playlistType == m3u8.MEDIA {
+	switch playlistType {
+	case m3u8.MASTER:
+		// master := playlist.(*m3u8.MasterPlaylist)
+
+	case m3u8.MEDIA:
 		media := playlist.(*m3u8.MediaPlaylist)
+		media.Segments = media.Segments[:media.Count()]
 
 		var key *m3u8.Key
-		for i := uint(0); i < media.Count(); i++ {
-			seg := media.Segments[i]
+		for i, seg := range media.Segments {
+			seg.SeqId = media.SeqNo + uint64(i)
 
 			if seg.Key != nil {
-				if strings.ToUpper(seg.Key.Method) != "NONE" {
-					key = seg.Key
-				} else {
+				if strings.ToUpper(seg.Key.Method) == "NONE" {
 					key = nil
+				} else {
+					key = seg.Key
 				}
 			}
 			seg.Key = key
@@ -45,7 +40,6 @@ func DecodeFrom(r io.Reader, strict bool) (playlist m3u8.Playlist, playlistType 
 
 		playlist = &MediaPlaylist{
 			TargetDuration: time.Duration(media.TargetDuration * 1e9),
-			Segments:       media.Segments[:media.Count()],
 			MediaPlaylist:  media,
 		}
 	}
