@@ -1,7 +1,6 @@
 package godam
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
