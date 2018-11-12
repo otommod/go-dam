@@ -103,8 +103,8 @@ func (h HLS) Get(masterURL *url.URL, dst io.Writer) error {
 			return errors.New("EXT-I-FRAMES-ONLY")
 		}
 
-		mediaSequence := media.SeqNo
-		if seenMediaSequence >= mediaSequence+uint64(len(media.Segments))-1 {
+		lastSegment := media.Segments[len(media.Segments)-1]
+		if seenMediaSequence >= lastSegment.SeqId {
 			// If the client reloads a Playlist file and finds that it has not
 			// changed, then it MUST wait for a period of one-half the target
 			// duration before retrying.
@@ -175,8 +175,8 @@ func (h HLS) Get(masterURL *url.URL, dst io.Writer) error {
 				byterangeOffsets[segURL.String()] = end + 1
 			}
 
-			err = retry(media.TargetDuration, func(ctx context.Context) error {
-				segData, err := h.Client.Do(req.WithContext(ctx))
+			err = retry(media.TargetDuration, func() error {
+				segData, err := h.Client.Do(req)
 
 				// retry the request if it failed due to network or server issues
 				if err != nil {
