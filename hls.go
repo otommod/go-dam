@@ -83,14 +83,18 @@ func (h HLS) decodeFrom(ctx context.Context, u *url.URL) (*MediaPlaylist, error)
 
 	// add a resonable timeout
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 
 	r, err := h.Client.Do(req.WithContext(ctx))
 	if err != nil {
+		cancel()
 		return nil, err
-	} else if r.StatusCode != 200 {
+	}
+
+	r.Body = readCloserWithCancel{r.Body, cancel}
+	if r.StatusCode != 200 {
 		return nil, HTTPError{r}
 	}
+	defer r.Body.Close()
 
 	playlist, playlistType, err := DecodeFrom(r.Body)
 	if err != nil {
@@ -198,17 +202,16 @@ func (h HLS) Download(ctx context.Context, masterURL *url.URL, dst io.Writer) er
 					return err
 				}
 
-				segBody := readCloserWithCancel{segData.Body, cancel}
+				segData.Body = readCloserWithCancel{segData.Body, cancel}
 				if segData.StatusCode != 200 {
-					segBody.Close()
 					return HTTPError{segData}
 				}
 
 				select {
-				case segDataCh <- segBody:
+				case segDataCh <- segData.Body:
 
 				case <-ctx.Done():
-					segBody.Close()
+					segData.Body.Close()
 					return ctx.Err()
 				}
 			}
