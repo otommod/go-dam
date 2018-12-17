@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/grafov/m3u8"
@@ -24,8 +23,7 @@ func (e HTTPError) Error() string {
 }
 
 type HLS struct {
-	Client        *http.Client
-	SelectVariant func([]*m3u8.Variant) *m3u8.Variant
+	Client *http.Client
 }
 
 func sleep(ctx context.Context, d time.Duration) {
@@ -45,15 +43,15 @@ func (w readCloserWithCancel) Close() error {
 	return w.ReadCloser.Close()
 }
 
-func (h HLS) getVariant(u *url.URL) (*m3u8.Variant, error) {
-	r, err := h.Client.Get(u.String())
+func (h HLS) ListVariants(uri string) ([]*m3u8.Variant, error) {
+	r, err := h.Client.Get(uri)
 	if err != nil {
 		return nil, err
 	} else if r.StatusCode != 200 {
 		return nil, HTTPError{r}
 	}
 
-	playlist, playlistType, err := DecodeFrom(r.Body)
+	playlist, playlistType, err := DecodeFrom(r.Body, uri)
 	if err != nil {
 		return nil, err
 	} else if playlistType != m3u8.MASTER {
@@ -61,22 +59,11 @@ func (h HLS) getVariant(u *url.URL) (*m3u8.Variant, error) {
 	}
 	master := playlist.(*m3u8.MasterPlaylist)
 
-	log.Printf("found %d variations\n", len(master.Variants))
-	if h.SelectVariant != nil {
-		v := h.SelectVariant(master.Variants)
-		if v != nil {
-			return v, nil
-		}
-	} else {
-		for _, v := range master.Variants {
-			return v, nil
-		}
-	}
-	return nil, errors.New("no streams found")
+	return master.Variants, nil
 }
 
-func (h HLS) decodeFrom(ctx context.Context, u *url.URL) (*MediaPlaylist, error) {
-	req, err := http.NewRequest("GET", u.String(), nil)
+func (h HLS) readPlaylist(ctx context.Context, uri string) (*MediaPlaylist, error) {
+	req, err := http.NewRequest("GET", uri, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +83,7 @@ func (h HLS) decodeFrom(ctx context.Context, u *url.URL) (*MediaPlaylist, error)
 	}
 	defer r.Body.Close()
 
-	playlist, playlistType, err := DecodeFrom(r.Body)
+	playlist, playlistType, err := DecodeFrom(r.Body, uri)
 	if err != nil {
 		return nil, err
 	} else if playlistType != m3u8.MEDIA {
@@ -106,17 +93,7 @@ func (h HLS) decodeFrom(ctx context.Context, u *url.URL) (*MediaPlaylist, error)
 	return playlist.(*MediaPlaylist), nil
 }
 
-func (h HLS) Download(ctx context.Context, masterURL *url.URL, dst io.Writer) error {
-	variant, err := h.getVariant(masterURL)
-	if err != nil {
-		return err
-	}
-
-	variantURL, err := masterURL.Parse(variant.URI)
-	if err != nil {
-		return err
-	}
-
+func (h HLS) Download(ctx context.Context, uri string, dst io.Writer) error {
 	g, ctx := errgroup.WithContext(ctx)
 
 	segDataCh := make(chan io.ReadCloser)
@@ -127,10 +104,10 @@ func (h HLS) Download(ctx context.Context, masterURL *url.URL, dst io.Writer) er
 		byterangeOffsets := make(map[string]int64)
 
 		for {
-			log.Println("downloading playlist", variant.URI)
+			log.Println("downloading playlist", uri)
 
 			lastLoadedPlaylist := time.Now()
-			media, err := h.decodeFrom(ctx, variantURL)
+			media, err := h.readPlaylist(ctx, uri)
 			if err != nil {
 				return err
 			}
@@ -164,25 +141,20 @@ func (h HLS) Download(ctx context.Context, masterURL *url.URL, dst io.Writer) er
 				}
 				seenMediaSequence = seg.SeqId
 
+				log.Println("downloading segment", seg.URI)
+				req, err := http.NewRequest("GET", seg.URI, nil)
+				if err != nil {
+					return err
+				}
+
 				if seg.Key != nil {
 					return errors.New("segment is encrypted")
-				}
-
-				segURL, err := variantURL.Parse(seg.URI)
-				if err != nil {
-					return err
-				}
-
-				log.Println("downloading segment", seg.URI)
-				req, err := http.NewRequest("GET", segURL.String(), nil)
-				if err != nil {
-					return err
 				}
 
 				if seg.Limit < 0 {
 					return errors.New("EXT-X-BYTERANGE is negative")
 				} else if seg.Limit != 0 {
-					offset, ok := byterangeOffsets[segURL.String()]
+					offset, ok := byterangeOffsets[seg.URI]
 					if seg.Offset != 0 {
 						offset = seg.Offset
 					} else if !ok {
@@ -192,7 +164,7 @@ func (h HLS) Download(ctx context.Context, masterURL *url.URL, dst io.Writer) er
 					// the Range header is inclusive
 					end := offset + seg.Limit - 1
 					req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, end))
-					byterangeOffsets[segURL.String()] = end + 1
+					byterangeOffsets[seg.URI] = end + 1
 				}
 
 				ctx, cancel := context.WithTimeout(ctx, 2*media.TargetDuration)
