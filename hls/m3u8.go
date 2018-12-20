@@ -1,4 +1,4 @@
-package godam
+package hls
 
 import (
 	"bytes"
@@ -45,7 +45,7 @@ func splitKV(line string) []string {
 	})
 }
 
-func DecodeFrom(r io.Reader, playlistURI string) (playlist m3u8.Playlist, playlistType m3u8.ListType, err error) {
+func parseM3U8(r io.Reader, playlistURI string) (playlist m3u8.Playlist, playlistType m3u8.ListType, err error) {
 	var playlistURL *url.URL
 	if playlistURL, err = url.Parse(playlistURI); err != nil {
 		return

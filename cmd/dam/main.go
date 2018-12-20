@@ -1,13 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
-	"net/url"
+	"net/http"
 	"os"
 
-	"github.com/otommod/godam"
+	"github.com/otommod/go-dam/hls"
 )
 
 var (
@@ -35,17 +36,15 @@ func main() {
 	playlist := flag.CommandLine.Arg(0)
 	filename := flag.CommandLine.Arg(1)
 
-	u, err := url.Parse(playlist)
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	fd, err := os.Create(filename)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	err = godam.HLS(u, fd)
+	hlsClient := hls.Client{
+		Client: http.DefaultClient,
+	}
+	err = hlsClient.Download(context.TODO(), playlist, fd)
 	if err != nil {
 		log.Fatal(err)
 	}

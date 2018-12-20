@@ -1,4 +1,4 @@
-package godam
+package hls
 
 import (
 	"bytes"
@@ -11,18 +11,11 @@ import (
 	"time"
 
 	"github.com/grafov/m3u8"
+	"github.com/otommod/go-dam"
 	"golang.org/x/sync/errgroup"
 )
 
-type HTTPError struct {
-	*http.Response
-}
-
-func (e HTTPError) Error() string {
-	return e.Status
-}
-
-type HLS struct {
+type Client struct {
 	Client *http.Client
 }
 
@@ -43,15 +36,15 @@ func (w readCloserWithCancel) Close() error {
 	return w.ReadCloser.Close()
 }
 
-func (h HLS) ListVariants(uri string) ([]*m3u8.Variant, error) {
+func (h Client) ListVariants(uri string) ([]*m3u8.Variant, error) {
 	r, err := h.Client.Get(uri)
 	if err != nil {
 		return nil, err
 	} else if r.StatusCode != 200 {
-		return nil, HTTPError{r}
+		return nil, dam.HTTPError{r}
 	}
 
-	playlist, playlistType, err := DecodeFrom(r.Body, uri)
+	playlist, playlistType, err := parseM3U8(r.Body, uri)
 	if err != nil {
 		return nil, err
 	} else if playlistType != m3u8.MASTER {
@@ -62,7 +55,7 @@ func (h HLS) ListVariants(uri string) ([]*m3u8.Variant, error) {
 	return master.Variants, nil
 }
 
-func (h HLS) readPlaylist(ctx context.Context, uri string) (*MediaPlaylist, error) {
+func (h Client) readPlaylist(ctx context.Context, uri string) (*MediaPlaylist, error) {
 	req, err := http.NewRequest("GET", uri, nil)
 	if err != nil {
 		return nil, err
@@ -79,11 +72,11 @@ func (h HLS) readPlaylist(ctx context.Context, uri string) (*MediaPlaylist, erro
 
 	r.Body = readCloserWithCancel{r.Body, cancel}
 	if r.StatusCode != 200 {
-		return nil, HTTPError{r}
+		return nil, dam.HTTPError{r}
 	}
 	defer r.Body.Close()
 
-	playlist, playlistType, err := DecodeFrom(r.Body, uri)
+	playlist, playlistType, err := parseM3U8(r.Body, uri)
 	if err != nil {
 		return nil, err
 	} else if playlistType != m3u8.MEDIA {
@@ -93,7 +86,7 @@ func (h HLS) readPlaylist(ctx context.Context, uri string) (*MediaPlaylist, erro
 	return playlist.(*MediaPlaylist), nil
 }
 
-func (h HLS) Download(ctx context.Context, uri string, dst io.Writer) error {
+func (h Client) Download(ctx context.Context, uri string, dst io.Writer) error {
 	g, ctx := errgroup.WithContext(ctx)
 
 	segDataCh := make(chan io.ReadCloser)
@@ -180,7 +173,7 @@ func (h HLS) Download(ctx context.Context, uri string, dst io.Writer) error {
 
 				segData.Body = readCloserWithCancel{segData.Body, cancel}
 				if segData.StatusCode != 200 {
-					return HTTPError{segData}
+					return dam.HTTPError{segData}
 				}
 
 				select {

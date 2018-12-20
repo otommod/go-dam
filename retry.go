@@ -1,4 +1,4 @@
-package godam
+package dam
 
 import (
 	"net/http"
