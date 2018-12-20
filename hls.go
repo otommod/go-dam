@@ -104,7 +104,7 @@ func (h HLS) Download(ctx context.Context, uri string, dst io.Writer) error {
 		byterangeOffsets := make(map[string]int64)
 
 		for {
-			log.Println("downloading playlist", uri)
+			log.Println("[DEBUG] downloading playlist", uri)
 
 			lastLoadedPlaylist := time.Now()
 			media, err := h.readPlaylist(ctx, uri)
@@ -112,18 +112,19 @@ func (h HLS) Download(ctx context.Context, uri string, dst io.Writer) error {
 				return err
 			}
 
-			if media.TargetDuration <= 0 {
-				return errors.New("EXT-X-TARGETDURATION was not positive")
-			} else if media.TargetDuration >= 90*time.Second {
-				return errors.New("EXT-X-TARGETDURATION was too long")
+			if media.Iframe {
+				return errors.New("EXT-I-FRAMES-ONLY not supported")
 			}
 
-			if media.Iframe {
-				return errors.New("EXT-I-FRAMES-ONLY")
+			if media.TargetDuration <= 0 {
+				return errors.New("EXT-X-TARGETDURATION non-positive")
+			} else if media.TargetDuration >= 90*time.Second {
+				return errors.New("EXT-X-TARGETDURATION too long")
 			}
 
 			lastSegment := media.Segments[len(media.Segments)-1]
 			if seenMediaSequence >= lastSegment.SeqId {
+				// § 6.3.4
 				// If the client reloads a Playlist file and finds that it has not
 				// changed, then it MUST wait for a period of one-half the target
 				// duration before retrying.
@@ -134,26 +135,29 @@ func (h HLS) Download(ctx context.Context, uri string, dst io.Writer) error {
 
 			for _, seg := range media.Segments {
 				if seg.SeqId <= seenMediaSequence {
-					log.Println("skipping segment", seg.URI)
+					log.Println("[DEBUG] skipping segment", seg.URI)
 					continue
 				} else if seg.SeqId > seenMediaSequence+1 {
-					log.Println("\033[31m", seg.SeqId-seenMediaSequence-1, "segments expired", "\033[m")
+					log.Println("[WARN]", seg.SeqId-seenMediaSequence-1, "segments expired")
 				}
 				seenMediaSequence = seg.SeqId
 
-				log.Println("downloading segment", seg.URI)
+				log.Println("[DEBUG] downloading segment", seg.URI)
 				req, err := http.NewRequest("GET", seg.URI, nil)
 				if err != nil {
 					return err
 				}
 
 				if seg.Key != nil {
-					return errors.New("segment is encrypted")
+					return errors.New("EXT-X-KEY not supported")
+				}
+				if seg.Map != nil {
+					return errors.New("EXT-X-MAP not supported")
 				}
 
 				if seg.Limit < 0 {
 					return errors.New("EXT-X-BYTERANGE is negative")
-				} else if seg.Limit != 0 {
+				} else if seg.Limit > 0 {
 					offset, ok := byterangeOffsets[seg.URI]
 					if seg.Offset != 0 {
 						offset = seg.Offset
@@ -192,6 +196,7 @@ func (h HLS) Download(ctx context.Context, uri string, dst io.Writer) error {
 				return nil
 			}
 
+			// § 6.3.4
 			// When a client loads a Playlist file for the first time or reloads a
 			// Playlist file and finds that it has changed since the last time it
 			// was loaded, the client MUST wait for at least the target duration
