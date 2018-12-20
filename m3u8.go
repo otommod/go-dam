@@ -1,16 +1,30 @@
 package godam
 
 import (
+	"bytes"
 	"io"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/grafov/m3u8"
 )
 
+type CommonPlaylistTags struct {
+	IndependentSegments bool
+	StartOffset         time.Duration
+	StartPrecise        bool
+}
+
+type MasterPlaylist struct {
+	CommonPlaylistTags
+	*m3u8.MasterPlaylist
+}
+
 type MediaPlaylist struct {
 	TargetDuration time.Duration
+	CommonPlaylistTags
 	*m3u8.MediaPlaylist
 }
 
@@ -18,33 +32,81 @@ type renditionGroupKey struct {
 	Type, GroupID string
 }
 
-func DecodeFrom(r io.Reader, playlistURI string) (playlist m3u8.Playlist, playlistType m3u8.ListType, err error) {
-	playlist, playlistType, err = m3u8.DecodeFrom(r, true)
+func splitKV(line string) []string {
+	var inQuotes bool
+	return strings.FieldsFunc(line, func(c rune) bool {
+		switch {
+		case c == ',' && !inQuotes:
+			return true
+		case c == '"':
+			inQuotes = !inQuotes
+		}
+		return false
+	})
+}
 
-	playlistURL, err := url.Parse(playlistURI)
+func DecodeFrom(r io.Reader, playlistURI string) (playlist m3u8.Playlist, playlistType m3u8.ListType, err error) {
+	var playlistURL *url.URL
+	if playlistURL, err = url.Parse(playlistURI); err != nil {
+		return
+	}
+
+	var buf bytes.Buffer
+	if _, err = io.Copy(&buf, r); err != nil {
+		return
+	}
+
+	playlist, playlistType, err = m3u8.Decode(buf, true)
 	if err != nil {
 		return
+	}
+
+	var commonTags CommonPlaylistTags
+	var line string
+	var bufErr error
+	for bufErr != nil {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		switch {
+		case strings.HasPrefix(line, "#EXT-X-INDEPENDENT-SEGMENTS"):
+			commonTags.IndependentSegments = true
+
+		case strings.HasPrefix(line, "#EXT-X-START:"):
+			for _, kv := range splitKV(line[13:]) {
+				switch {
+				case strings.HasPrefix(kv, "TIME-OFFSET"):
+					timeOffset, _ := strconv.ParseFloat(kv[11:], 64)
+					commonTags.StartOffset = time.Duration(timeOffset * float64(time.Second))
+				case strings.HasPrefix(kv, "PRECISE"):
+					commonTags.StartPrecise = kv[7:] == "YES"
+				}
+			}
+		}
+
+		line, bufErr = buf.ReadString('\n')
 	}
 
 	switch playlistType {
 	case m3u8.MASTER:
 		master := playlist.(*m3u8.MasterPlaylist)
 
-		// A set of one or more EXT-X-MEDIA tags with the same GROUP-ID value and
-		// the same TYPE value defines a Group of Renditions.
+		// § 4.3.4.1.1
+		// A set of one or more EXT-X-MEDIA tags with the same GROUP-ID value
+		// and the same TYPE value defines a Group of Renditions.
 		renditionGroups := make(map[renditionGroupKey][]*m3u8.Alternative)
 		for _, variant := range master.Variants {
 			var variantURL *url.URL
-			variantURL, err = playlistURL.Parse(variant.URI)
-			if err != nil {
+			if variantURL, err = playlistURL.Parse(variant.URI); err != nil {
 				return
 			}
 			variant.URI = variantURL.String()
 
 			for _, alt := range variant.Alternatives {
 				var altURL *url.URL
-				altURL, err = playlistURL.Parse(alt.URI)
-				if err != nil {
+				if altURL, err = playlistURL.Parse(alt.URI); err != nil {
 					return
 				}
 				alt.URI = altURL.String()
@@ -55,18 +117,23 @@ func DecodeFrom(r io.Reader, playlistURI string) (playlist m3u8.Playlist, playli
 		}
 
 		for _, v := range master.Variants {
-			renditions := []renditionGroupKey{
+			groupKeys := []renditionGroupKey{
 				{"VIDEO", v.Video},
 				{"AUDIO", v.Audio},
 				{"SUBTITLES", v.Subtitles},
 			}
 
 			v.Alternatives = nil
-			for _, g := range renditions {
-				if a, ok := renditionGroups[g]; ok {
-					v.Alternatives = append(v.Alternatives, a...)
+			for _, g := range groupKeys {
+				if r, ok := renditionGroups[g]; ok {
+					v.Alternatives = append(v.Alternatives, r...)
 				}
 			}
+		}
+
+		playlist = &MasterPlaylist{
+			MasterPlaylist:     master,
+			CommonPlaylistTags: commonTags,
 		}
 
 	case m3u8.MEDIA:
@@ -78,11 +145,16 @@ func DecodeFrom(r io.Reader, playlistURI string) (playlist m3u8.Playlist, playli
 			seg.SeqId = media.SeqNo + uint64(i)
 
 			var segURL *url.URL
-			segURL, err = playlistURL.Parse(seg.URI)
-			if err != nil {
+			if segURL, err = playlistURL.Parse(seg.URI); err != nil {
 				return
 			}
 			seg.URI = segURL.String()
+
+			var mapURL *url.URL
+			if mapURL, err = playlistURL.Parse(seg.Map.URI); err != nil {
+				return
+			}
+			seg.Map.URI = mapURL.String()
 
 			if seg.Key != nil {
 				if strings.ToUpper(seg.Key.Method) == "NONE" {
@@ -90,8 +162,7 @@ func DecodeFrom(r io.Reader, playlistURI string) (playlist m3u8.Playlist, playli
 				} else {
 					key = seg.Key
 					var keyURL *url.URL
-					keyURL, err = playlistURL.Parse(key.URI)
-					if err != nil {
+					if keyURL, err = playlistURL.Parse(key.URI); err != nil {
 						return
 					}
 					key.URI = keyURL.String()
@@ -101,8 +172,9 @@ func DecodeFrom(r io.Reader, playlistURI string) (playlist m3u8.Playlist, playli
 		}
 
 		playlist = &MediaPlaylist{
-			TargetDuration: time.Duration(media.TargetDuration * 1e9),
-			MediaPlaylist:  media,
+			TargetDuration:     time.Duration(media.TargetDuration * 1e9),
+			MediaPlaylist:      media,
+			CommonPlaylistTags: commonTags,
 		}
 	}
 
