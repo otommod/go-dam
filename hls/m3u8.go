@@ -150,11 +150,13 @@ func parseM3U8(r io.Reader, playlistURI string) (playlist m3u8.Playlist, playlis
 			}
 			seg.URI = segURL.String()
 
-			var mapURL *url.URL
-			if mapURL, err = playlistURL.Parse(seg.Map.URI); err != nil {
-				return
+			if seg.Map != nil {
+				var mapURL *url.URL
+				if mapURL, err = playlistURL.Parse(seg.Map.URI); err != nil {
+					return
+				}
+				seg.Map.URI = mapURL.String()
 			}
-			seg.Map.URI = mapURL.String()
 
 			if seg.Key != nil {
 				if strings.ToUpper(seg.Key.Method) == "NONE" {

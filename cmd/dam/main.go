@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/grafov/m3u8"
 	"github.com/otommod/go-dam/hls"
 )
 
@@ -44,7 +45,20 @@ func main() {
 	hlsClient := hls.Client{
 		Client: http.DefaultClient,
 	}
-	err = hlsClient.Download(context.TODO(), playlist, fd)
+
+	variants, err := hlsClient.ListVariants(playlist)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var highestBandwidth *m3u8.Variant
+	for _, v := range variants {
+		if highestBandwidth == nil || v.Bandwidth > highestBandwidth.Bandwidth {
+			highestBandwidth = v
+		}
+	}
+
+	err = hlsClient.Download(context.TODO(), highestBandwidth.URI, fd)
 	if err != nil {
 		log.Fatal(err)
 	}

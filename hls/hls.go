@@ -50,7 +50,7 @@ func (h Client) ListVariants(uri string) ([]*m3u8.Variant, error) {
 	} else if playlistType != m3u8.MASTER {
 		return nil, errors.New("expected Master Playlist")
 	}
-	master := playlist.(*m3u8.MasterPlaylist)
+	master := playlist.(*MasterPlaylist)
 
 	return master.Variants, nil
 }
