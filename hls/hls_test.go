@@ -27,17 +27,19 @@ func TestMediaSequence(t *testing.T) {
 			seg/2.ts
 		`)
 
-		if accessed[r.URL.EscapedPath()] >= 2 {
+		switch accessed[r.URL.EscapedPath()] {
+		case 1:
+			io.WriteString(w, `
+				#EXTINF:3.14,
+				seg/3.ts
+			`)
+		case 2:
 			io.WriteString(w, "#EXT-X-ENDLIST")
 		}
 		accessed[r.URL.EscapedPath()]++
 	})
 
 	mux.HandleFunc("/seg/", func(w http.ResponseWriter, r *http.Request) {
-		if accessed[r.URL.EscapedPath()] > 1 {
-			t.Error("segment was not skipped like it should have", r.URL.EscapedPath())
-		}
-
 		w.WriteHeader(200)
 		w.Write(make([]byte, 1000))
 		accessed[r.URL.EscapedPath()]++
@@ -50,6 +52,22 @@ func TestMediaSequence(t *testing.T) {
 	err := h.Download(context.Background(), srv.URL+"/media.m3u8", ioutil.Discard)
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	if accessed["/seg/1.ts"] < 1 {
+		t.Error("segment", "/seg/1.ts", "was not read at all")
+	} else if accessed["/seg/1.ts"] > 1 {
+		t.Error("segment", "/seg/1.ts", "was read more than once")
+	}
+	if accessed["/seg/2.ts"] < 1 {
+		t.Error("segment", "/seg/2.ts", "was not read at all")
+	} else if accessed["/seg/2.ts"] > 1 {
+		t.Error("segment", "/seg/2.ts", "was read more than once")
+	}
+	if accessed["/seg/3.ts"] < 1 {
+		t.Error("segment", "/seg/3.ts", "was not read at all")
+	} else if accessed["/seg/3.ts"] > 1 {
+		t.Error("segment", "/seg/3.ts", "was read more than once")
 	}
 }
 
