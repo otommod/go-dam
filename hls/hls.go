@@ -115,17 +115,6 @@ func (h Client) Download(ctx context.Context, uri string, dst io.Writer) error {
 				return errors.New("EXT-X-TARGETDURATION too long")
 			}
 
-			lastSegment := media.Segments[len(media.Segments)-1]
-			if lastSegment.SeqId < nextMediaSequence {
-				// § 6.3.4
-				// If the client reloads a Playlist file and finds that it has not
-				// changed, then it MUST wait for a period of one-half the target
-				// duration before retrying.
-
-				sleep(ctx, media.TargetDuration/2)
-				continue
-			}
-
 			for _, seg := range media.Segments {
 				if seg.SeqId < nextMediaSequence {
 					log.Println("[DEBUG] skipping segment", seg.URI)
@@ -198,13 +187,23 @@ func (h Client) Download(ctx context.Context, uri string, dst io.Writer) error {
 				return nil
 			}
 
-			// § 6.3.4
-			// When a client loads a Playlist file for the first time or reloads a
-			// Playlist file and finds that it has changed since the last time it
-			// was loaded, the client MUST wait for at least the target duration
-			// before attempting to reload the Playlist file again, measured from
-			// the last time the client began loading the Playlist file.
-			sleep(ctx, time.Until(lastLoadedPlaylist.Add(media.TargetDuration)))
+			lastSegment := media.Segments[len(media.Segments)-1]
+			if lastSegment.SeqId < nextMediaSequence {
+				// § 6.3.4
+				// If the client reloads a Playlist file and finds that it has not
+				// changed, then it MUST wait for a period of one-half the target
+				// duration before retrying.
+				sleep(ctx, media.TargetDuration/2)
+
+			} else {
+				// § 6.3.4
+				// When a client loads a Playlist file for the first time or reloads a
+				// Playlist file and finds that it has changed since the last time it
+				// was loaded, the client MUST wait for at least the target duration
+				// before attempting to reload the Playlist file again, measured from
+				// the last time the client began loading the Playlist file.
+				sleep(ctx, time.Until(lastLoadedPlaylist.Add(media.TargetDuration)))
+			}
 		}
 	})
 
