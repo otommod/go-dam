@@ -62,13 +62,9 @@ func parseM3U8(r io.Reader, playlistURI string) (playlist m3u8.Playlist, playlis
 	}
 
 	var commonTags CommonPlaylistTags
-	var line string
-	var bufErr error
-	for bufErr != nil {
+	line, bufErr := buf.ReadString('\n')
+	for ; bufErr == nil; line, bufErr = buf.ReadString('\n') {
 		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
 
 		switch {
 		case strings.HasPrefix(line, "#EXT-X-INDEPENDENT-SEGMENTS"):
@@ -77,16 +73,14 @@ func parseM3U8(r io.Reader, playlistURI string) (playlist m3u8.Playlist, playlis
 		case strings.HasPrefix(line, "#EXT-X-START:"):
 			for _, kv := range splitKV(line[13:]) {
 				switch {
-				case strings.HasPrefix(kv, "TIME-OFFSET"):
-					timeOffset, _ := strconv.ParseFloat(kv[11:], 64)
+				case strings.HasPrefix(kv, "TIME-OFFSET="):
+					timeOffset, _ := strconv.ParseFloat(kv[12:], 64)
 					commonTags.StartOffset = time.Duration(timeOffset * float64(time.Second))
-				case strings.HasPrefix(kv, "PRECISE"):
-					commonTags.StartPrecise = kv[7:] == "YES"
+				case strings.HasPrefix(kv, "PRECISE="):
+					commonTags.StartPrecise = kv[8:] == "YES"
 				}
 			}
 		}
-
-		line, bufErr = buf.ReadString('\n')
 	}
 
 	switch playlistType {
