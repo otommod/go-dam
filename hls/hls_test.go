@@ -63,8 +63,8 @@ func TestByterange(t *testing.T) {
 	mux.HandleFunc("/video.ts", func(w http.ResponseWriter, r *http.Request) {
 		httpRange := r.Header.Get("Range")
 		switch {
-		case mediaSequence == 0 && httpRange == "bytes=1-1000":
-		case mediaSequence == 1 && httpRange == "bytes=1001-2000":
+		case mediaSequence == 0 && httpRange == "bytes=0-999":
+		case mediaSequence == 1 && httpRange == "bytes=1000-1999":
 		default:
 			t.Error("requested wrong range", httpRange)
 		}

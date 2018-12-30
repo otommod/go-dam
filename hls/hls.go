@@ -155,7 +155,10 @@ func (h Client) Download(ctx context.Context, uri string, dst io.Writer) error {
 					if seg.Offset != 0 {
 						offset = seg.Offset
 					} else if !ok {
-						return errors.New("EXT-X-BYTERANGE offset not given")
+						// We should be returning an error here saying that an
+						// offset was not given.  However, we can't
+						// differentiate between a missing and a zero offset so
+						// we'll just assume a zero offset was given.
 					}
 
 					// the Range header is inclusive
@@ -172,7 +175,13 @@ func (h Client) Download(ctx context.Context, uri string, dst io.Writer) error {
 				}
 
 				segData.Body = readCloserWithCancel{segData.Body, cancel}
-				if segData.StatusCode != 200 {
+				if seg.Limit > 0 {
+					if segData.StatusCode == 200 {
+						return errors.New("EXT-X-BYTERANGE not supported by the server")
+					} else if segData.StatusCode != 206 {
+						return dam.HTTPError{segData}
+					}
+				} else if segData.StatusCode != 200 {
 					return dam.HTTPError{segData}
 				}
 
