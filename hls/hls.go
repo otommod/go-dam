@@ -36,47 +36,43 @@ func (w readCloserWithCancel) Close() error {
 	return w.ReadCloser.Close()
 }
 
-func (h Client) ListVariants(uri string) ([]*m3u8.Variant, error) {
-	r, err := h.Client.Get(uri)
+func (h Client) readPlaylist(ctx context.Context, uri string) (m3u8.Playlist, m3u8.ListType, error) {
+	req, err := http.NewRequest("GET", uri, nil)
 	if err != nil {
-		return nil, err
-	} else if r.StatusCode != 200 {
-		return nil, dam.HTTPError{r}
+		return nil, 0, err
 	}
 
-	playlist, playlistType, err := parseM3U8(r.Body, uri)
+	// add a resonable timeout
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+
+	r, err := h.Client.Do(req.WithContext(ctx))
+	if err != nil {
+		cancel()
+		return nil, 0, err
+	}
+
+	r.Body = readCloserWithCancel{r.Body, cancel}
+	if r.StatusCode != 200 {
+		return nil, 0, dam.HTTPError{r}
+	}
+	defer r.Body.Close()
+
+	return parseM3U8(r.Body, uri)
+}
+
+func (h Client) ListVariants(uri string) ([]*m3u8.Variant, error) {
+	playlist, playlistType, err := h.readPlaylist(context.TODO(), uri)
 	if err != nil {
 		return nil, err
 	} else if playlistType != m3u8.MASTER {
 		return nil, errors.New("expected Master Playlist")
 	}
-	master := playlist.(*MasterPlaylist)
 
-	return master.Variants, nil
+	return playlist.(*MasterPlaylist).Variants, nil
 }
 
-func (h Client) readPlaylist(ctx context.Context, uri string) (*MediaPlaylist, error) {
-	req, err := http.NewRequest("GET", uri, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	// add a resonable timeout
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-
-	r, err := h.Client.Do(req.WithContext(ctx))
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
-	r.Body = readCloserWithCancel{r.Body, cancel}
-	if r.StatusCode != 200 {
-		return nil, dam.HTTPError{r}
-	}
-	defer r.Body.Close()
-
-	playlist, playlistType, err := parseM3U8(r.Body, uri)
+func (h Client) readMediaPlaylist(ctx context.Context, uri string) (*MediaPlaylist, error) {
+	playlist, playlistType, err := h.readPlaylist(ctx, uri)
 	if err != nil {
 		return nil, err
 	} else if playlistType != m3u8.MEDIA {
@@ -100,7 +96,7 @@ func (h Client) Download(ctx context.Context, uri string, dst io.Writer) error {
 			log.Println("[DEBUG] downloading playlist", uri)
 
 			lastLoadedPlaylist := time.Now()
-			media, err := h.readPlaylist(ctx, uri)
+			media, err := h.readMediaPlaylist(ctx, uri)
 			if err != nil {
 				return err
 			}
