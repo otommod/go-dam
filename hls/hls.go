@@ -93,7 +93,7 @@ func (h Client) Download(ctx context.Context, uri string, dst io.Writer) error {
 	g.Go(func() error {
 		defer close(segDataCh)
 
-		var seenMediaSequence uint64
+		var nextMediaSequence uint64
 		byterangeOffsets := make(map[string]int64)
 
 		for {
@@ -116,7 +116,7 @@ func (h Client) Download(ctx context.Context, uri string, dst io.Writer) error {
 			}
 
 			lastSegment := media.Segments[len(media.Segments)-1]
-			if seenMediaSequence >= lastSegment.SeqId {
+			if lastSegment.SeqId < nextMediaSequence {
 				// § 6.3.4
 				// If the client reloads a Playlist file and finds that it has not
 				// changed, then it MUST wait for a period of one-half the target
@@ -127,13 +127,13 @@ func (h Client) Download(ctx context.Context, uri string, dst io.Writer) error {
 			}
 
 			for _, seg := range media.Segments {
-				if seg.SeqId <= seenMediaSequence {
+				if seg.SeqId < nextMediaSequence {
 					log.Println("[DEBUG] skipping segment", seg.URI)
 					continue
-				} else if seg.SeqId > seenMediaSequence+1 {
-					log.Println("[WARN]", seg.SeqId-seenMediaSequence-1, "segments expired")
+				} else if seg.SeqId > nextMediaSequence {
+					log.Println("[WARN]", seg.SeqId-nextMediaSequence, "segments expired")
 				}
-				seenMediaSequence = seg.SeqId
+				nextMediaSequence = seg.SeqId + 1
 
 				log.Println("[DEBUG] downloading segment", seg.URI)
 				req, err := http.NewRequest("GET", seg.URI, nil)
